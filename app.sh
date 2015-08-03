@@ -96,7 +96,12 @@ _download_bz2 "${FILE}" "${URL}" "${FOLDER}"
 pushd "target/${FOLDER}"
 # See: http://sourceforge.net/p/netatalk/bugs/574/
 sed -i '64i#define O_IGNORE 0' "include/atalk/acl.h"
-./configure --host="${HOST}" --prefix="" --localstatedir="/mnt/DroboFS/System" --with-uams-path="/lib/netatalk" --enable-shared --disable-static --with-shadow --without-pam --with-libgcrypt-dir="${DEPS}" --with-ssl-dir="${DEPS}" --with-bdb="${DEPS}"
+./configure --host="${HOST}" --prefix="" \
+  --localstatedir="/mnt/DroboFS/System" \
+  --with-uams-path="/lib/netatalk" \
+  --enable-shared --disable-static \
+  --with-shadow --without-pam \
+  --with-libgcrypt-dir="${DEPS}" --with-ssl-dir="${DEPS}" --with-bdb="${DEPS}"
 make
 make install DESTDIR="${DEST}"
 "${STRIP}" -s -R .comment -R .note -R .note.ABI-tag "${DEST}/sbin/"* "${DEST}/bin/"* || true
