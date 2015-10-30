@@ -1,0 +1,11 @@
+--- a/etc/cnid_dbd/db_param.h	2015-10-29 14:11:10.198069774 -0700
++++ b/etc/cnid_dbd/db_param.h	2015-10-29 14:13:05.768616855 -0700
+@@ -14,7 +14,7 @@
+ #define DEFAULT_MAXLOCKS           20000
+ #define DEFAULT_MAXLOCKOBJS        20000
+ #define DEFAULT_FLUSH_FREQUENCY    1000
+-#define DEFAULT_FLUSH_INTERVAL     1800
++#define DEFAULT_FLUSH_INTERVAL     604800 /* 7 days */
+ #define DEFAULT_USOCK_FILE         "usock"
+ #define DEFAULT_FD_TABLE_SIZE      512
+ #define DEFAULT_IDLE_TIMEOUT       (10 * 60)

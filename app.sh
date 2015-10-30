@@ -24,7 +24,7 @@ _build_openssl() {
 local OPENSSL_VERSION="0.9.8n"
 local OPENSSL_FOLDER="openssl-${OPENSSL_VERSION}"
 local OPENSSL_FILE="${OPENSSL_FOLDER}.tar.gz"
-local OPENSSL_URL="https://www.openssl.org/source/old/0.9.x/${OPENSSL_FILE}"
+local OPENSSL_URL="http://mirror.switch.ch/ftp/mirror/openssl/source/old/0.9.x/${OPENSSL_FILE}"
 
 _download_tgz "${OPENSSL_FILE}" "${OPENSSL_URL}" "${OPENSSL_FOLDER}"
 pushd target/"${OPENSSL_FOLDER}"
@@ -85,6 +85,22 @@ make install
 popd
 }
 
+### LIBATTR ###
+_build_libattr() {
+local VERSION="2.4.47"
+local FOLDER="attr-${VERSION}"
+local FILE="${FOLDER}.src.tar.gz"
+local URL="http://download.savannah.gnu.org/releases/attr/${FILE}"
+
+_download_tgz "${FILE}" "${URL}" "${FOLDER}"
+pushd "target/${FOLDER}"
+./configure --host="${HOST}" --prefix="${DEPS}" --enable-shared --disable-static #--enable-static --disable-shared
+make
+make install install-dev install-lib
+chmod -v a+x "${DEPS}/lib/libattr.so.1.1.0"
+popd
+}
+
 ### NETATALK ###
 _build_netatalk() {
 local VERSION="3.1.7"
@@ -93,7 +109,9 @@ local FILE="${FOLDER}.tar.bz2"
 local URL="http://sourceforge.net/projects/netatalk/files/netatalk/${VERSION}/${FILE}"
 
 _download_bz2 "${FILE}" "${URL}" "${FOLDER}"
+cp -vfa "src/${FOLDER}-increase-flush-interval.patch" "target/${FOLDER}/"
 pushd "target/${FOLDER}"
+patch -p1 -i "${FOLDER}-increase-flush-interval.patch"
 # See: http://sourceforge.net/p/netatalk/bugs/574/
 sed -i '64i#define O_IGNORE 0' "include/atalk/acl.h"
 ./configure --host="${HOST}" --prefix="" \
@@ -101,7 +119,9 @@ sed -i '64i#define O_IGNORE 0' "include/atalk/acl.h"
   --with-uams-path="/lib/netatalk" \
   --enable-shared --disable-static \
   --with-shadow --without-pam \
-  --with-libgcrypt-dir="${DEPS}" --with-ssl-dir="${DEPS}" --with-bdb="${DEPS}"
+  --with-cnid-cdb-backend --with-cnid-default-backend=dbd \
+  --with-libgcrypt-dir="${DEPS}" --with-bdb="${DEPS}" \
+  --with-ssl-dir="${DEPS}"
 make
 make install DESTDIR="${DEST}"
 "${STRIP}" -s -R .comment -R .note -R .note.ABI-tag "${DEST}/sbin/"* "${DEST}/bin/"* || true
