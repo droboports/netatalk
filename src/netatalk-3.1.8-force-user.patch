@@ -1,0 +1,468 @@
+diff -ru a/configure.ac b/configure.ac
+--- a/configure.ac	2015-03-27 20:41:11.000000000 -0700
++++ b/configure.ac	2016-01-06 15:58:00.280904790 -0800
+@@ -94,9 +94,6 @@
+ dnl OS specific checks
+ AC_NETATALK_OS_SPECIFIC
+ 
+-dnl Check for optional admin group support
+-AC_NETATALK_ADMIN_GROUP
+-
+ dnl Check for optional AFS support
+ AC_NETATALK_AFS_CHECK
+ 
+diff -ru a/doc/manpages/man5/afp.conf.5.xml b/doc/manpages/man5/afp.conf.5.xml
+--- a/doc/manpages/man5/afp.conf.5.xml	2015-12-28 17:46:09.000000000 -0800
++++ b/doc/manpages/man5/afp.conf.5.xml	2016-01-06 15:58:00.280904790 -0800
+@@ -297,6 +297,40 @@
+         </varlistentry>
+ 
+         <varlistentry>
++          <term>admin group = <replaceable>group</replaceable>
++          <type>(G)</type></term>
++
++          <listitem>
++            <para>Allows users of a certain group to be seen as the superuser
++            when they log in. This option is disabled by default.</para>
++          </listitem>
++        </varlistentry>
++
++        <varlistentry>
++          <term>force user = <replaceable>USER</replaceable>
++          <type>(G)</type></term>
++
++          <listitem>
++            <para>This specifies a UNIX user name that will be
++            assigned as the default user for all users connecting to
++            this server. This is useful for sharing files. You should
++            also use it carefully as using it incorrectly can cause
++            security problems.</para>
++          </listitem>
++        </varlistentry>
++
++        <varlistentry>
++          <term>force group = <replaceable>GROUP</replaceable>
++          <type>(G)</type></term>
++
++          <listitem>
++            <para>This specifies a UNIX group name that will be
++            assigned as the default primary group for all users
++            connecting to this server.</para>
++          </listitem>
++        </varlistentry>
++
++        <varlistentry>
+           <term>k5 keytab = <replaceable>path</replaceable>
+           <type>(G)</type></term>
+ 
+@@ -762,16 +796,6 @@
+ 
+       <variablelist>
+         <varlistentry>
+-          <term>admin group = <replaceable>group</replaceable>
+-          <type>(G)</type></term>
+-
+-          <listitem>
+-            <para>Allows users of a certain group to be seen as the superuser
+-            when they log in. This option is disabled by default.</para>
+-          </listitem>
+-        </varlistentry>
+-
+-        <varlistentry>
+           <term>afp read locks = <replaceable>BOOLEAN</replaceable> (default:
+           <emphasis>no</emphasis>) <type>(G)</type></term>
+ 
+diff -ru a/etc/afpd/afp_dsi.c b/etc/afpd/afp_dsi.c
+--- a/etc/afpd/afp_dsi.c	2015-03-23 07:45:24.000000000 -0700
++++ b/etc/afpd/afp_dsi.c	2016-01-06 15:58:00.284904513 -0800
+@@ -88,7 +88,7 @@
+      * as uid 0, that's the wrong user for volume's prexec_close scripts if any,
+      * restore our login user
+      */
+-    if (geteuid() != obj->uid) {
++    if (geteuid() != obj->euid) {
+         if (seteuid( obj->uid ) < 0) {
+             LOG(log_error, logtype_afpd, "can't seteuid(%u) back %s: uid: %u, euid: %u", 
+                 obj->uid, strerror(errno), getuid(), geteuid());
+@@ -305,7 +305,7 @@
+     } 
+ 
+     if (dsi->flags & DSI_DISCONNECTED) {
+-        if (geteuid() == 0) {
++        if (AFPobj->uid == 0) {
+             LOG(log_note, logtype_afpd, "afp_alarm: unauthenticated user, connection problem");
+             afp_dsi_die(EXITERR_CLNT);
+         }
+@@ -329,7 +329,7 @@
+         err = dsi_tickle(AFPobj->dsi);
+     }
+     if (err <= 0) {
+-        if (geteuid() == 0) {
++        if (AFPobj->uid == 0) {
+             LOG(log_note, logtype_afpd, "afp_alarm: unauthenticated user, connection problem");
+             afp_dsi_die(EXITERR_CLNT);
+         }
+diff -ru a/etc/afpd/afp_options.c b/etc/afpd/afp_options.c
+--- a/etc/afpd/afp_options.c	2015-03-23 07:45:24.000000000 -0700
++++ b/etc/afpd/afp_options.c	2016-01-06 15:58:00.284904513 -0800
+@@ -26,10 +26,8 @@
+ #include <netdb.h>
+ #endif /* HAVE_NETDB_H */
+ 
+-#ifdef ADMIN_GRP
+ #include <grp.h>
+ #include <sys/types.h>
+-#endif /* ADMIN_GRP */
+ 
+ #include <atalk/paths.h>
+ #include <atalk/util.h>
+@@ -132,11 +130,7 @@
+ #endif
+ 
+ 	printf( "   Admin group support:\t" );
+-#ifdef ADMIN_GRP
+ 	puts( "Yes" );
+-#else
+-	puts( "No" );
+-#endif
+ 
+ 	printf( "    Valid shell checks:\t" );
+ #ifndef DISABLE_SHELLCHECK
+diff -ru a/etc/afpd/auth.c b/etc/afpd/auth.c
+--- a/etc/afpd/auth.c	2015-03-23 07:45:24.000000000 -0700
++++ b/etc/afpd/auth.c	2016-01-06 15:58:00.288904175 -0800
+@@ -218,9 +218,8 @@
+ 
+ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expired)
+ {
+-#ifdef ADMIN_GRP
+-    int admin = 0;
+-#endif /* ADMIN_GRP */
++    bool admin = false;
++    int i;
+ 
+     if ( pwd->pw_uid == 0 ) {   /* don't allow root login */
+         LOG(log_error, logtype_afpd, "login: root login denied!" );
+@@ -238,77 +237,47 @@
+     if (set_groups(obj, pwd) != 0)
+         return AFPERR_BADUAM;
+ 
+-#ifdef ADMIN_GRP
+     LOG(log_debug, logtype_afpd, "obj->options.admingid == %d", obj->options.admingid);
+ 
+     if (obj->options.admingid != 0) {
+-        int i;
+         for (i = 0; i < obj->ngroups; i++) {
+-            if (obj->groups[i] == obj->options.admingid) admin = 1;
++            if (obj->groups[i] == obj->options.admingid) {
++                admin = true;
++            }
+         }
+     }
+     if (admin) {
+         ad_setfuid(0);
+         LOG(log_info, logtype_afpd, "admin login -- %s", pwd->pw_name );
+-    }
+-    if (!admin)
+-#endif /* ADMIN_GRP */
+-#ifdef TRU64
+-    {
+-        struct DSI *dsi = obj->handle;
+-        struct hostent *hp;
+-        char *clientname;
+-        int argc;
+-        char **argv;
+-        char hostname[256];
+-
+-        afp_get_cmdline( &argc, &argv );
+-
+-        hp = gethostbyaddr( (char *) &dsi->client.sin_addr,
+-                            sizeof( struct in_addr ),
+-                            dsi->client.sin_family );
+-
+-        if( hp )
+-            clientname = hp->h_name;
+-        else
+-            clientname = inet_ntoa( dsi->client.sin_addr );
+-
+-        sprintf( hostname, "%s@%s", pwd->pw_name, clientname );
+-
+-        if( sia_become_user( NULL, argc, argv, hostname, pwd->pw_name,
+-                             NULL, FALSE, NULL, NULL,
+-                             SIA_BEU_REALLOGIN ) != SIASUCCESS )
+-            return AFPERR_BADUAM;
+-
+-        LOG(log_info, logtype_afpd, "session from %s (%s)", hostname,
+-            inet_ntoa( dsi->client.sin_addr ) );
+-
++    } else {
+         if (setegid( pwd->pw_gid ) < 0 || seteuid( pwd->pw_uid ) < 0) {
+             LOG(log_error, logtype_afpd, "login: %s %s", pwd->pw_name, strerror(errno) );
+             return AFPERR_BADUAM;
+         }
+     }
+-#else /* TRU64 */
+-    if (setegid( pwd->pw_gid ) < 0 || seteuid( pwd->pw_uid ) < 0) {
+-        LOG(log_error, logtype_afpd, "login: %s %s", pwd->pw_name, strerror(errno) );
+-        return AFPERR_BADUAM;
++
++    if (obj->options.force_user) {
++        if (seteuid(obj->options.force_uid) < 0) {
++            LOG(log_error, logtype_afpd, "login: %s %s", pwd->pw_name, strerror(errno));
++            return AFPERR_BADUAM;
++        }
++        LOG(log_info, logtype_afpd, "login: force uid: %ju", (uintmax_t)obj->options.force_uid);
+     }
+-#endif /* TRU64 */
+ 
+-    LOG(log_debug, logtype_afpd, "login: supplementary groups: %s", print_groups(obj->ngroups, obj->groups));
++    if (obj->options.force_group) {
++        if (setegid(obj->options.force_gid) < 0) {
++            LOG(log_error, logtype_afpd, "login: %s %s", pwd->pw_name, strerror(errno));
++            return AFPERR_BADUAM;
++        }
++        LOG(log_info, logtype_afpd, "login: force gid: %ju", (uintmax_t)obj->options.force_gid);
++    }
+ 
+-    /* There's probably a better way to do this, but for now, we just play root */
+-#ifdef ADMIN_GRP
+-    if (admin)
+-        obj->uid = 0;
+-    else
+-#endif /* ADMIN_GRP */
+-        obj->uid = geteuid();
++    LOG(log_debug, logtype_afpd, "login: supplementary groups: %s", print_groups(obj->ngroups, obj->groups));
+ 
+     set_auth_switch(obj, expired);
+-    /* save our euid, we need it for preexec_close */
+-    obj->uid = geteuid();
+     obj->logout = logout;
++    obj->uid = pwd->pw_uid;
++    obj->euid = geteuid();
+ 
+     /* pam_umask or similar might have changed our umask */
+     (void)umask(obj->options.umask);
+@@ -489,7 +458,7 @@
+                 memcpy(obj->sinfo.clientid, p, idlen + 8);
+                 obj->sinfo.clientid_len = idlen + 8;
+             }
+-            if (ipc_child_write(obj->ipc_fd, IPC_GETSESSION, idlen+8, p) != 0)
++            if (ipc_child_write(obj, IPC_GETSESSION, idlen+8, p) != 0)
+                 return AFPERR_MISC;
+             tklen = obj->sinfo.sessiontoken_len;
+             token = obj->sinfo.sessiontoken;
+@@ -572,7 +541,7 @@
+     setitimer(ITIMER_REAL, &none, NULL);
+ 
+     /* check for old session, possibly transfering session from here to there */
+-    if (ipc_child_write(obj->ipc_fd, IPC_DISCOLDSESSION, tklen, &token) != 0)
++    if (ipc_child_write(obj, IPC_DISCOLDSESSION, tklen, &token) != 0)
+         goto exit;
+     /* write uint16_t DSI request ID */
+     if (writet(obj->ipc_fd, &dsi->header.dsi_requestID, 2, 0, 2) != 2) {
+diff -ru a/etc/afpd/unix.c b/etc/afpd/unix.c
+--- a/etc/afpd/unix.c	2015-03-23 07:45:24.000000000 -0700
++++ b/etc/afpd/unix.c	2016-01-06 15:58:00.288904175 -0800
+@@ -114,7 +114,9 @@
+     /* ma_user is a union of all permissions but we must follow
+      * unix perm
+     */
+-    if ( (obj->uid == stat->st_uid) || (obj->uid == 0)) {
++    if (obj->euid == 0) {
++        ma->ma_user = AR_UREAD | AR_UWRITE | AR_USEARCH | AR_UOWN;
++    } else if (obj->uid == stat->st_uid) {
+         ma->ma_user = ma->ma_owner | AR_UOWN;
+     }
+     else if (gmem(stat->st_gid, obj->ngroups, obj->groups)) {
+diff -ru a/etc/afpd/volume.c b/etc/afpd/volume.c
+--- a/etc/afpd/volume.c	2015-03-23 07:45:24.000000000 -0700
++++ b/etc/afpd/volume.c	2016-01-06 15:58:00.288904175 -0800
+@@ -686,7 +686,7 @@
+         volume = volume->v_next;
+     }
+ 
+-    ipc_child_write(obj->ipc_fd, IPC_VOLUMES, blength(openvolnames), bdata(openvolnames));
++    ipc_child_write(obj, IPC_VOLUMES, blength(openvolnames), bdata(openvolnames));
+     bdestroy(openvolnames);
+ }
+ 
+diff -ru a/include/atalk/globals.h b/include/atalk/globals.h
+--- a/include/atalk/globals.h	2015-03-23 07:45:24.000000000 -0700
++++ b/include/atalk/globals.h	2016-01-06 15:58:00.288904175 -0800
+@@ -9,6 +9,7 @@
+ #include <sys/param.h>
+ #include <grp.h>
+ #include <sys/types.h>
++#include <stdbool.h>
+ 
+ #ifdef HAVE_NETDB_H
+ #include <netdb.h>  /* this isn't header-protected under ultrix */
+@@ -116,6 +117,10 @@
+     mode_t umask;
+     mode_t save_mask;
+     gid_t admingid;
++    bool force_user;
++    uid_t force_uid;
++    bool force_group;
++    gid_t force_gid;
+     int    volnamelen;
+     /* default value for winbind authentication */
+     char *ntdomain, *ntseparator, *addomain;
+@@ -146,7 +151,8 @@
+     char oldtmp[AFPOBJ_TMPSIZ + 1], newtmp[AFPOBJ_TMPSIZ + 1];
+     void *uam_cookie; /* cookie for uams */
+     struct session_info  sinfo;
+-    uid_t uid; 	/* client running user id */
++    uid_t uid;  /* client login user id */
++    uid_t euid; /* client effective process user id */
+     int ipc_fd; /* anonymous PF_UNIX socket for IPC with afpd parent */
+     gid_t *groups;
+     int ngroups;
+diff -ru a/include/atalk/server_ipc.h b/include/atalk/server_ipc.h
+--- a/include/atalk/server_ipc.h	2014-12-11 03:27:44.000000000 -0800
++++ b/include/atalk/server_ipc.h	2016-01-06 15:58:00.288904175 -0800
+@@ -11,7 +11,7 @@
+ #define IPC_VOLUMES          3  /* pass list of open volumes */
+ 
+ extern int ipc_server_read(server_child_t *children, int fd);
+-extern int ipc_child_write(int fd, uint16_t command, int len, void *token);
++extern int ipc_child_write(AFPObj *obj, uint16_t command, int len, void *token);
+ extern int ipc_child_state(AFPObj *obj, uint16_t state);
+ 
+ #endif /* IPC_GETSESSION_LOGIN */
+diff -ru a/libatalk/util/netatalk_conf.c b/libatalk/util/netatalk_conf.c
+--- a/libatalk/util/netatalk_conf.c	2015-12-28 17:40:35.000000000 -0800
++++ b/libatalk/util/netatalk_conf.c	2016-01-06 15:58:00.292903851 -0800
+@@ -1995,13 +1995,27 @@
+         putenv(options->k5keytab);
+     }
+ 
+-#ifdef ADMIN_GRP
+     if ((p = atalk_iniparser_getstring(config, INISEC_GLOBAL, "admin group",  NULL))) {
+          struct group *gr = getgrnam(p);
+          if (gr != NULL)
+              options->admingid = gr->gr_gid;
+     }
+-#endif /* ADMIN_GRP */
++
++    if ((p = atalk_iniparser_getstring(config, INISEC_GLOBAL, "force user",  NULL))) {
++         struct passwd *pw = getpwnam(p);
++         if (pw != NULL) {
++             options->force_uid = pw->pw_uid;
++             options->force_user = true;
++         }
++    }
++
++    if ((p = atalk_iniparser_getstring(config, INISEC_GLOBAL, "force group",  NULL))) {
++         struct group *gr = getgrnam(p);
++         if (gr != NULL) {
++             options->force_gid = gr->gr_gid;
++             options->force_group = true;
++         }
++    }
+ 
+     q = atalk_iniparser_getstrdup(config, INISEC_GLOBAL, "cnid server", "localhost:4700");
+     r = strrchr(q, ':');
+diff -ru a/libatalk/util/server_ipc.c b/libatalk/util/server_ipc.c
+--- a/libatalk/util/server_ipc.c	2014-12-11 03:27:44.000000000 -0800
++++ b/libatalk/util/server_ipc.c	2016-01-06 15:58:00.292903851 -0800
+@@ -262,7 +262,7 @@
+ }
+ 
+ /* ----------------- */
+-int ipc_child_write(int fd, uint16_t command, int len, void *msg)
++int ipc_child_write(AFPObj *obj, uint16_t command, int len, void *msg)
+ {
+    char block[IPC_MAXMSGSIZE], *p;
+    pid_t pid;
+@@ -287,7 +287,7 @@
+     * is with a different user. 
+     * But we really don't want a remote kill command.
+    */
+-   uid = geteuid();
++   uid = obj->uid;
+    memcpy(p, &uid, sizeof(uid_t));
+    p += sizeof(uid_t);
+ 
+@@ -298,7 +298,7 @@
+ 
+    LOG(log_debug, logtype_afpd, "ipc_child_write(%s)", ipc_cmd_str[command]);
+ 
+-   if ((ret = writet(fd, block, len+IPC_HEADERLEN, 0, 1)) != len + IPC_HEADERLEN) {
++   if ((ret = writet(obj->ipc_fd, block, len+IPC_HEADERLEN, 0, 1)) != len + IPC_HEADERLEN) {
+        return -1;
+    }
+ 
+@@ -307,5 +307,5 @@
+ 
+ int ipc_child_state(AFPObj *obj, uint16_t state)
+ {
+-    return ipc_child_write(obj->ipc_fd, IPC_STATE, sizeof(uint16_t), &state);
++    return ipc_child_write(obj, IPC_STATE, sizeof(uint16_t), &state);
+ }
+diff -ru a/macros/netatalk.m4 b/macros/netatalk.m4
+--- a/macros/netatalk.m4	2015-03-27 20:41:11.000000000 -0700
++++ b/macros/netatalk.m4	2016-01-06 15:58:00.292903851 -0800
+@@ -335,25 +335,6 @@
+ esac
+ ])
+ 
+-dnl Check for optional admin group support
+-AC_DEFUN([AC_NETATALK_ADMIN_GROUP], [
+-    netatalk_cv_admin_group=yes
+-    AC_MSG_CHECKING([for administrative group support])
+-    AC_ARG_ENABLE(admin-group,
+- 	    [  --disable-admin-group   disable admin group],[
+-            if test x"$enableval" = x"no"; then
+-		         AC_DEFINE(ADMIN_GRP, 0, [Define if the admin group should be enabled])
+-		         netatalk_cv_admin_group=no
+-		         AC_MSG_RESULT([no])
+-	        else
+-		         AC_DEFINE(ADMIN_GRP, 1, [Define if the admin group should be enabled])
+-		         AC_MSG_RESULT([yes])
+-            fi],[
+-		AC_DEFINE(ADMIN_GRP, 1, [Define if the admin group should be enabled])
+-		AC_MSG_RESULT([yes])
+-	])
+-])
+-
+ dnl Check for optional cracklib support
+ AC_DEFUN([AC_NETATALK_CRACKLIB], [
+ netatalk_cv_with_cracklib=no
+diff -ru a/man/man5/afp.conf.5.in b/man/man5/afp.conf.5.in
+--- a/man/man5/afp.conf.5.in	2015-12-28 18:11:42.000000000 -0800
++++ b/man/man5/afp.conf.5.in	2016-01-06 15:58:00.296903542 -0800
+@@ -269,6 +269,21 @@
+ \fBadmin auth user\fR, you can authenticate as any other user\&.
+ .RE
+ .PP
++admin group = \fIgroup\fR \fB(G)\fR
++.RS 4
++Allows users of a certain group to be seen as the superuser when they log in\&. This option is disabled by default\&.
++.RE
++.PP
++force user = \fIUSER\fR \fB(G)\fR
++.RS 4
++This specifies a UNIX user name that will be assigned as the default user for all users connecting to this server\&. This is useful for sharing files\&. You should also use it carefully as using it incorrectly can cause security problems\&.
++.RE
++.PP
++force group = \fIGROUP\fR \fB(G)\fR
++.RS 4
++This specifies a UNIX group name that will be assigned as the default primary group for all users connecting to this server\&.
++.RE
++.PP
+ k5 keytab = \fIpath\fR \fB(G)\fR, k5 service = \fIservice\fR \fB(G)\fR, k5 realm = \fIrealm\fR \fB(G)\fR
+ .RS 4
+ These are required if the server supports the Kerberos 5 authentication UAM\&.
+@@ -515,11 +530,6 @@
+ .RE
+ .SS "Miscellaneous Options"
+ .PP
+-admin group = \fIgroup\fR \fB(G)\fR
+-.RS 4
+-Allows users of a certain group to be seen as the superuser when they log in\&. This option is disabled by default\&.
+-.RE
+-.PP
+ afp read locks = \fIBOOLEAN\fR (default: \fIno\fR) \fB(G)\fR
+ .RS 4
+ Whether to apply locks to the byte region read in FPRead calls\&. The AFP spec mandates this, but it\*(Aqs not really in line with UNIX semantics and is a performance hug\&.
