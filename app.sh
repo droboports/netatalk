@@ -97,9 +97,11 @@ local URL="http://download.savannah.gnu.org/releases/attr/${FILE}"
 
 _download_tgz "${FILE}" "${URL}" "${FOLDER}"
 pushd "target/${FOLDER}"
-./configure --host="${HOST}" --prefix="${DEPS}" --disable-shared
+./configure --host="${HOST}" --prefix="${DEPS}" --enable-static --disable-shared
 make
 make install install-dev install-lib
+# make install-lib does not install the static lib
+cp -vf libattr/.libs/libattr.a "${DEPS}/lib/"
 popd
 }
 
@@ -141,16 +143,15 @@ popd
 _build_rootfs() {
 # bin/attr
 # bin/getfattr
-# bin/hmac256
 # bin/setfattr
+
+# bin/hmac256
+
 # lib/libatalk.so
 # lib/libatalk.so.17
 # lib/libatalk.so.17.0.0
 # lib/netatalk/uams_dhx2_passwd.so
-# lib/netatalk/uams_dhx_passwd.so
 # lib/netatalk/uams_guest.so
-# lib/netatalk/uams_passwd.so
-# lib/netatalk/uams_randnum.so
 # sbin/afpd
 # sbin/cnid_dbd
 # sbin/cnid_metad
